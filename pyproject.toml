@@ -1,0 +1,70 @@
+[project]
+name = "joist"
+version = "0.1.0"
+description = "A small, opinionated uv-native Python monorepo framework."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+authors = [
+  { name = "Joist contributors" },
+]
+license = "UPL-1.0"
+license-files = ["LICENSE"]
+keywords = ["uv", "monorepo", "workspace", "task-runner", "build-tools"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: Software Development :: Version Control :: Git",
+  "Typing :: Typed",
+]
+
+[project.scripts]
+joist = "joist.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/shrug-labs/joist"
+Repository = "https://github.com/shrug-labs/joist"
+Issues = "https://github.com/shrug-labs/joist/issues"
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "twine>=6",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.8,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "joist"
+module-root = ""
+
+[tool.joist]
+name = "joist"
+type = "tool"
+private = false
+depends_on = []
+
+[tool.joist.targets.test]
+command = "python -m unittest discover -s tests"
+cache = false
+
+[tool.joist.targets.lint]
+command = "python -m compileall joist tests"
+cache = true
+inputs = ["joist/**/*.py", "tests/**/*.py", "pyproject.toml", "joist.toml"]
+
+[tool.joist.targets.build]
+command = "uv build"
+cache = false
