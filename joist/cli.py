@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -59,8 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
     run = subcommands.add_parser("run", help="Run a target across projects.")
     _add_run_arguments(run)
 
-    affected = subcommands.add_parser("affected", help="Run a target only for changed projects and their dependents.")
-    _add_run_arguments(affected)
+    affected = subcommands.add_parser(
+        "affected",
+        help="Run a target only for changed projects and their dependents, or list affected projects.",
+    )
+    _add_run_arguments(affected, target_required=False)
+    affected.add_argument("--list", action="store_true", dest="list_projects", help="List affected projects.")
+    affected.add_argument("--json", action="store_true", help="Use JSON output with --list.")
     affected.set_defaults(affected=True)
 
     cache = subcommands.add_parser("cache", help="Manage the local task cache.")
@@ -74,9 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("target")
-    parser.add_argument("projects", nargs="*")
+def _add_run_arguments(parser: argparse.ArgumentParser, *, target_required: bool = True) -> None:
+    if target_required:
+        parser.add_argument("target", help="Target to run.")
+    else:
+        parser.add_argument("target", nargs="?", help="Target to run. Omit when using --list.")
+    parser.add_argument("projects", nargs="*", help="Project names to filter.")
     parser.add_argument("--all", action="store_true", dest="all_projects")
     parser.add_argument("--include-deps", action="store_true")
     parser.add_argument("--base")
@@ -123,6 +132,19 @@ def dispatch(args: argparse.Namespace, extra_args: list[str]) -> int:
         return 0
 
     if args.command in {"run", "affected"}:
+        if args.command == "affected" and args.list_projects:
+            names = select_affected_projects(workspace, args)
+            if args.json:
+                print(json.dumps(workspace.as_dict(names), indent=2, sort_keys=True))
+            else:
+                for project in workspace.sorted_projects(names):
+                    print(project.name)
+            return 0
+        if args.command == "affected" and args.json:
+            raise WorkspaceError("--json can only be used with `joist affected --list`.")
+        if args.command == "affected" and not args.target:
+            raise WorkspaceError("`joist affected` requires a target, or use `joist affected --list`.")
+
         options = RunOptions(
             target=args.target,
             projects=tuple(args.projects),
@@ -155,6 +177,24 @@ def dispatch(args: argparse.Namespace, extra_args: list[str]) -> int:
     return 0
 
 
+def select_affected_projects(workspace: Workspace, args: argparse.Namespace) -> set[str]:
+    if args.list_projects:
+        requested_names = tuple(name for name in (args.target, *args.projects) if name)
+    else:
+        requested_names = tuple(args.projects)
+
+    if args.all_projects:
+        selected = set(workspace.projects)
+    else:
+        selected = workspace.affected(args.base, args.head)
+        if requested_names:
+            requested = {workspace.project(name).name for name in requested_names}
+            selected = selected.intersection(requested)
+    if args.include_deps:
+        selected = workspace.with_dependencies(selected)
+    return selected
+
+
 def print_graph(workspace: Workspace, format_name: str) -> None:
     if format_name == "json":
         print(workspace.as_json())
@@ -179,4 +219,3 @@ def print_graph(workspace: Workspace, format_name: str) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

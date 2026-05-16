@@ -35,5 +35,6 @@ class WorkspaceConfig:
     project_globs: tuple[str, ...]
     cache_dir: Path
     project_excludes: tuple[str, ...] = ()
+    affects_all: tuple[str, ...] = ()
     default_base: str = "main"
     target_defaults: dict[str, Target] = field(default_factory=dict)

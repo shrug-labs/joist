@@ -149,25 +149,35 @@ flowchart TD
     K --> L["Record successful output in local cache"]
 ```
 
-Root coordination files currently include:
+Built-in root coordination files are `joist.toml`, root `pyproject.toml`, and
+`uv.lock`. Add repo-specific shared files with `workspace.affects_all`:
 
-```text
-joist.toml
-pyproject.toml
-uv.lock
+```toml
+[workspace]
+affects_all = [
+  ".github/workflows/**",
+  "Makefile",
+  "requirements*.txt",
+  "ruff.toml",
+  "scripts/**",
+]
 ```
 
 ## Commands
 
 ```sh
-uv run python -m joist list
-uv run python -m joist graph --format dot
-uv run python -m joist run build api
-uv run python -m joist run lint --all --dry-run
-uv run python -m joist affected test --base origin/main --head HEAD
-uv run python -m joist cache clear
-uv run python -m joist version minor
+uv run joist list
+uv run joist graph --format dot
+uv run joist run build api
+uv run joist run lint --all --dry-run
+uv run joist affected --list --base origin/main --head HEAD --json
+uv run joist affected --list api --base origin/main --head HEAD
+uv run joist affected test --base origin/main --head HEAD
+uv run joist cache clear
+uv run joist version minor
 ```
+
+With `--list`, project names filter the affected set instead of naming a target.
 
 `depends_on = ["^build"]` means "run the `build` target for dependency projects
 before this project." This is the one Nx-style target pipeline rule Joist
@@ -196,15 +206,18 @@ on:
 jobs:
   affected:
     runs-on: ubuntu-latest
+    env:
+      BASE_REF: ${{ github.base_ref }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       - run: uv sync --locked
-      - run: uv run python -m joist affected lint --base origin/${{ github.base_ref }} --head HEAD
-      - run: uv run python -m joist affected test --base origin/${{ github.base_ref }} --head HEAD
-      - run: uv run python -m joist affected build --base origin/${{ github.base_ref }} --head HEAD
+      - run: uv run joist affected --list --base "origin/${BASE_REF}" --head HEAD --json
+      - run: uv run joist affected lint --base "origin/${BASE_REF}" --head HEAD
+      - run: uv run joist affected test --base "origin/${BASE_REF}" --head HEAD
+      - run: uv run joist affected build --base "origin/${BASE_REF}" --head HEAD
 ```
 
 For main-branch validation or nightly builds, run the complete target set:
@@ -220,12 +233,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       - run: uv sync --locked
-      - run: uv run python -m joist run lint --all
-      - run: uv run python -m joist run test --all
-      - run: uv run python -m joist run build --all
+      - run: uv run joist run lint --all
+      - run: uv run joist run test --all
+      - run: uv run joist run build --all
 ```
 
 For Make-based workflows, delegate the selection logic to Joist instead of
@@ -235,19 +248,19 @@ duplicating package lists:
 .PHONY: lint test build affected-test clean-cache
 
 lint:
-	uv run python -m joist run lint --all
+	uv run joist run lint --all
 
 test:
-	uv run python -m joist run test --all
+	uv run joist run test --all
 
 build:
-	uv run python -m joist run build --all
+	uv run joist run build --all
 
 affected-test:
-	uv run python -m joist affected test --base origin/main
+	uv run joist affected test --base origin/main
 
 clean-cache:
-	uv run python -m joist cache clear
+	uv run joist cache clear
 ```
 
 For release pipelines, keep versioning explicit and build every public package
@@ -255,9 +268,9 @@ after the bump:
 
 ```sh
 uv sync --locked
-uv run python -m joist version patch
+uv run joist version patch
 uv lock
-uv run python -m joist run build --all --no-cache
+uv run joist run build --all --no-cache
 ```
 
 Before uploading, run the local PyPI readiness checks:
