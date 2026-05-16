@@ -12,7 +12,7 @@ from typing import Any
 from .models import Project, Target, WorkspaceConfig
 
 DEFAULT_PROJECT_GLOBS = ("packages/*", "apps/*")
-ROOT_AFFECTS_ALL = {"joist.toml", "pyproject.toml", "uv.lock"}
+DEFAULT_AFFECTS_ALL = ("joist.toml", "pyproject.toml", "uv.lock")
 DEPENDENCY_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)")
 
 
@@ -34,7 +34,7 @@ class Workspace:
         projects = discover_projects(config)
         if not projects:
             raise WorkspaceError(
-                "No projects found. Run `uv run python -m joist init` or check joist.toml."
+                "No projects found. Run `uv run joist init` or check joist.toml."
             )
         return cls(config, projects)
 
@@ -94,7 +94,7 @@ class Workspace:
 
     def affected_by_files(self, files: list[str]) -> set[str]:
         normalized = [_changed_path(self.root, path) for path in files if path.strip()]
-        if any(str(path).replace("\\", "/") in ROOT_AFFECTS_ALL for path in normalized):
+        if any(_matches_any(str(path).replace("\\", "/"), self.config.affects_all) for path in normalized):
             return set(self.projects)
 
         changed: set[str] = set()
@@ -133,6 +133,10 @@ class Workspace:
         return self.affected_by_files(changed)
 
     def as_json(self) -> str:
+        return json.dumps(self.as_dict(), indent=2, sort_keys=True)
+
+    def as_dict(self, names: set[str] | None = None) -> dict[str, Any]:
+        selected = set(self.projects) if names is None else set(names)
         payload = {
             "root": str(self.root),
             "projects": {
@@ -146,9 +150,10 @@ class Workspace:
                     "targets": sorted(project.targets),
                 }
                 for name, project in sorted(self.projects.items())
+                if name in selected
             },
         }
-        return json.dumps(payload, indent=2, sort_keys=True)
+        return payload
 
 
 def find_workspace_root(start: Path) -> Path:
@@ -172,6 +177,8 @@ def load_config(root: Path) -> WorkspaceConfig:
 
     project_globs = tuple(workspace_data.get("projects") or uv_members or DEFAULT_PROJECT_GLOBS)
     project_excludes = tuple(workspace_data.get("exclude") or uv_excludes)
+    configured_affects_all = _string_list(workspace_data.get("affects_all", ()), "workspace.affects_all")
+    affects_all = tuple(dict.fromkeys(DEFAULT_AFFECTS_ALL + configured_affects_all))
     cache_dir = _workspace_path(root, workspace_data.get("cache_dir", ".joist/cache"))
     default_base = workspace_data.get("default_base", "main")
     target_defaults = _parse_targets(data.get("target_defaults", {}), {})
@@ -182,6 +189,7 @@ def load_config(root: Path) -> WorkspaceConfig:
         project_excludes=project_excludes,
         cache_dir=cache_dir,
         default_base=default_base,
+        affects_all=affects_all,
         target_defaults=target_defaults,
     )
 
@@ -319,6 +327,18 @@ def _is_excluded(root: Path, project_root: Path, patterns: tuple[str, ...]) -> b
         if fnmatch(relative, normalized) or fnmatch(f"{relative}/", f"{normalized}/"):
             return True
     return False
+
+
+def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:
+    return any(fnmatch(value, pattern.rstrip("/")) for pattern in patterns)
+
+
+def _string_list(value: Any, name: str) -> tuple[str, ...]:
+    if not isinstance(value, list | tuple):
+        raise WorkspaceError(f"{name} must be a list of strings.")
+    if not all(isinstance(item, str) for item in value):
+        raise WorkspaceError(f"{name} must contain only strings.")
+    return tuple(value)
 
 
 def _workspace_path(root: Path, value: str) -> Path:

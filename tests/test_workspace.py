@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
+import shlex
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 
+from joist.cli import main
 from joist.release import bump_version, bump_workspace_version
 from joist.runner import RunOptions, Runner
 from joist.scaffold import init_workspace, new_project
@@ -25,6 +31,89 @@ class WorkspaceTests(unittest.TestCase):
         affected = workspace.affected_by_files(["packages/core/src/core/__init__.py"])
 
         self.assertEqual(affected, {"core", "api"})
+
+    def test_configured_affects_all_patterns_select_every_project(self) -> None:
+        root = self.make_workspace()
+        write(
+            root / "joist.toml",
+            """
+[workspace]
+projects = ["packages/*", "apps/*"]
+affects_all = ["requirements*.txt", ".github/workflows/**"]
+
+[target_defaults.build]
+command = "python -m build {project_root}"
+depends_on = ["^build"]
+cache = false
+""",
+        )
+        workspace = Workspace(load_config(root), discover_projects(load_config(root)))
+
+        self.assertEqual(workspace.affected_by_files(["requirements-dev.txt"]), {"core", "api"})
+        self.assertEqual(workspace.affected_by_files([".github/workflows/ci.yml"]), {"core", "api"})
+        self.assertEqual(workspace.affected_by_files(["joist.toml"]), {"core", "api"})
+
+    def test_affected_list_flag_json_outputs_selected_projects(self) -> None:
+        root = self.make_workspace()
+        self.init_git_repo(root)
+        write(root / "packages/core/src/core/__init__.py", '__version__ = "0.1.1"\n')
+
+        output = StringIO()
+        with chdir(root), redirect_stdout(output):
+            code = main(["affected", "--list", "--json", "--base", "HEAD"])
+
+        self.assertEqual(code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(sorted(payload["projects"]), ["api", "core"])
+
+    def test_affected_list_target_is_not_shadowed(self) -> None:
+        root = self.make_workspace()
+        write(
+            root / "joist.toml",
+            f"""
+[workspace]
+projects = ["packages/*", "apps/*"]
+
+[target_defaults.list]
+command = "{shlex.quote(sys.executable)} -c \\"print('ran-list-target')\\""
+cache = false
+""",
+        )
+        self.init_git_repo(root)
+        write(root / "packages/core/src/core/__init__.py", '__version__ = "0.1.1"\n')
+
+        output = StringIO()
+        with chdir(root), redirect_stdout(output):
+            code = main(["affected", "list", "--base", "HEAD", "--no-cache"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("joist: running core:list", output.getvalue())
+        self.assertIn("joist: running api:list", output.getvalue())
+        self.assertIn("ran-list-target", output.getvalue())
+
+    def test_affected_json_requires_list_flag(self) -> None:
+        root = self.make_workspace()
+
+        error = StringIO()
+        with chdir(root), redirect_stderr(error):
+            code = main(["affected", "test", "--json"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("--json can only be used", error.getvalue())
+
+    def test_affects_all_must_be_a_list(self) -> None:
+        root = self.make_workspace()
+        write(
+            root / "joist.toml",
+            """
+[workspace]
+projects = ["packages/*", "apps/*"]
+affects_all = "requirements*.txt"
+""",
+        )
+
+        with self.assertRaisesRegex(WorkspaceError, "workspace.affects_all"):
+            load_config(root)
 
     def test_build_plan_honors_dependency_targets(self) -> None:
         root = self.make_workspace()
@@ -172,6 +261,13 @@ cache_dir = "../outside"
         self.addCleanup(temp.cleanup)
         return make_workspace(Path(temp.name).resolve(), api_version=api_version, api_private=api_private)
 
+    def init_git_repo(self, root: Path) -> None:
+        run(["git", "init"], root)
+        run(["git", "config", "user.email", "joist@example.com"], root)
+        run(["git", "config", "user.name", "Joist Tests"], root)
+        run(["git", "add", "."], root)
+        run(["git", "commit", "-m", "initial"], root)
+
 
 def make_workspace(root: Path, api_version: str = "0.1.0", api_private: bool = False) -> Path:
     write(
@@ -188,7 +284,7 @@ cache = false
     )
     write(
         root / "packages/core/pyproject.toml",
-        """
+        f"""
 [project]
 name = "core"
 version = "0.1.0"
@@ -199,7 +295,7 @@ name = "core"
 type = "lib"
 
 [tool.joist.targets.no_shell]
-command = "python3 -c \\"import sys; assert sys.argv[1] == '&&'\\" && false"
+command = "{shlex.quote(sys.executable)} -c \\"import sys; assert sys.argv[1] == '&&'\\" && false"
 cache = false
 """,
     )
@@ -228,6 +324,28 @@ type = "app"
 def write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content.strip() + "\n", encoding="utf-8")
+
+
+class chdir:
+    def __init__(self, path: Path):
+        self.path = path
+        self.previous = Path.cwd()
+
+    def __enter__(self) -> None:
+        import os
+
+        os.chdir(self.path)
+
+    def __exit__(self, *args) -> None:
+        import os
+
+        os.chdir(self.previous)
+
+
+def run(args: list[str], cwd: Path) -> None:
+    import subprocess
+
+    subprocess.run(args, cwd=cwd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
 if __name__ == "__main__":
