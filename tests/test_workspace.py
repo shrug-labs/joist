@@ -66,6 +66,117 @@ cache = false
         payload = json.loads(output.getvalue())
         self.assertEqual(sorted(payload["projects"]), ["api", "core"])
 
+    def test_list_since_json_outputs_selected_projects(self) -> None:
+        root = self.make_workspace()
+        self.init_git_repo(root)
+        write(root / "packages/core/src/core/__init__.py", '__version__ = "0.1.1"\n')
+
+        output = StringIO()
+        with chdir(root), redirect_stdout(output):
+            code = main(["list", "--since", "HEAD", "--json"])
+
+        self.assertEqual(code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(sorted(payload["projects"]), ["api", "core"])
+
+    def test_project_filter_intersects_since_selection(self) -> None:
+        root = self.make_workspace()
+        self.init_git_repo(root)
+        write(root / "packages/core/src/core/__init__.py", '__version__ = "0.1.1"\n')
+
+        output = StringIO()
+        with chdir(root), redirect_stdout(output):
+            code = main(["list", "--since", "HEAD", "--project", "api", "--json"])
+
+        self.assertEqual(code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(sorted(payload["projects"]), ["api"])
+
+    def test_run_since_selects_affected_projects(self) -> None:
+        root = self.make_workspace()
+        self.init_git_repo(root)
+        write(root / "packages/core/src/core/__init__.py", '__version__ = "0.1.1"\n')
+
+        output = StringIO()
+        with chdir(root), redirect_stdout(output):
+            code = main(["run", "build", "--since", "HEAD", "--dry-run"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("core:build ->", output.getvalue())
+        self.assertIn("api:build ->", output.getvalue())
+
+    def test_run_project_filter_selects_exact_project(self) -> None:
+        root = self.make_workspace()
+
+        output = StringIO()
+        with chdir(root), redirect_stdout(output):
+            code = main(["run", "no_shell", "--project", "core", "--dry-run"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("core:no_shell ->", output.getvalue())
+
+    def test_default_run_skips_projects_missing_target(self) -> None:
+        root = self.make_workspace()
+
+        output = StringIO()
+        with chdir(root), redirect_stdout(output):
+            code = main(["run", "no_shell", "--dry-run"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("core:no_shell ->", output.getvalue())
+
+    def test_unknown_target_errors_when_no_selected_projects_define_it(self) -> None:
+        root = self.make_workspace()
+
+        error = StringIO()
+        with chdir(root), redirect_stderr(error):
+            code = main(["run", "not_a_target", "--dry-run"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("No selected projects define target 'not_a_target'", error.getvalue())
+
+    def test_explicit_project_errors_when_target_is_missing(self) -> None:
+        root = self.make_workspace()
+
+        error = StringIO()
+        with chdir(root), redirect_stderr(error):
+            code = main(["run", "no_shell", "--project", "api", "--dry-run"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("Project 'api' has no target 'no_shell'", error.getvalue())
+
+    def test_since_and_base_are_mutually_exclusive(self) -> None:
+        root = self.make_workspace()
+
+        error = StringIO()
+        with chdir(root), redirect_stderr(error):
+            code = main(["run", "build", "--since", "HEAD", "--base", "main"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("either --since or --base", error.getvalue())
+
+    def test_all_flag_is_not_supported(self) -> None:
+        root = self.make_workspace()
+
+        error = StringIO()
+        with chdir(root), redirect_stderr(error):
+            with self.assertRaises(SystemExit) as raised:
+                main(["run", "build", "--all"])
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("unrecognized arguments: --all", error.getvalue())
+
+    def test_affected_does_not_accept_since(self) -> None:
+        root = self.make_workspace()
+
+        error = StringIO()
+        with chdir(root), redirect_stderr(error):
+            with self.assertRaises(SystemExit) as raised:
+                main(["affected", "test", "--since", "HEAD"])
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("unrecognized arguments: --since", error.getvalue())
+
     def test_affected_list_target_is_not_shadowed(self) -> None:
         root = self.make_workspace()
         write(

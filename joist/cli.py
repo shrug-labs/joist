@@ -52,7 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
     new.add_argument("--depends-on", action="append", default=[])
     new.add_argument("--force", action="store_true")
 
-    subcommands.add_parser("list", help="List discovered projects.").add_argument("--json", action="store_true")
+    list_projects = subcommands.add_parser("list", help="List discovered projects.")
+    list_projects.add_argument("--json", action="store_true")
+    list_projects.add_argument("--since", metavar="REF", help="List projects changed since a Git ref.")
+    _add_project_filter(list_projects)
 
     graph = subcommands.add_parser("graph", help="Print the project dependency graph.")
     graph.add_argument("--format", choices=("text", "json", "dot"), default="text")
@@ -62,9 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     affected = subcommands.add_parser(
         "affected",
-        help="Run a target only for changed projects and their dependents, or list affected projects.",
+        help="Compatibility command for base/head changed-project runs.",
     )
-    _add_run_arguments(affected, target_required=False)
+    _add_run_arguments(affected, target_required=False, since=False)
     affected.add_argument("--list", action="store_true", dest="list_projects", help="List affected projects.")
     affected.add_argument("--json", action="store_true", help="Use JSON output with --list.")
     affected.set_defaults(affected=True)
@@ -80,18 +83,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_run_arguments(parser: argparse.ArgumentParser, *, target_required: bool = True) -> None:
+def _add_run_arguments(parser: argparse.ArgumentParser, *, target_required: bool = True, since: bool = True) -> None:
     if target_required:
         parser.add_argument("target", help="Target to run.")
     else:
-        parser.add_argument("target", nargs="?", help="Target to run. Omit when using --list.")
+        parser.add_argument("target", nargs="?", help="Target to run, or first project filter with --list.")
     parser.add_argument("projects", nargs="*", help="Project names to filter.")
-    parser.add_argument("--all", action="store_true", dest="all_projects")
     parser.add_argument("--include-deps", action="store_true")
+    if since:
+        parser.add_argument("--since", metavar="REF", help="Select projects changed since a Git ref.")
     parser.add_argument("--base")
     parser.add_argument("--head")
+    _add_project_filter(parser)
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+
+
+def _add_project_filter(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--project",
+        action="append",
+        default=[],
+        dest="project_filters",
+        metavar="NAME",
+        help="Filter by exact project name. May be repeated.",
+    )
 
 
 def dispatch(args: argparse.Namespace, extra_args: list[str]) -> int:
@@ -119,10 +135,11 @@ def dispatch(args: argparse.Namespace, extra_args: list[str]) -> int:
     workspace = Workspace.load()
 
     if args.command == "list":
+        names = select_projects(workspace, args, affected=bool(args.since))
         if args.json:
-            print(workspace.as_json())
+            print(json.dumps(workspace.as_dict(names), indent=2, sort_keys=True))
         else:
-            for project in workspace.sorted_projects():
+            for project in workspace.sorted_projects(names):
                 deps = f" -> {', '.join(project.depends_on)}" if project.depends_on else ""
                 print(f"{project.name} ({project.type}) {project.root.relative_to(workspace.root)}{deps}")
         return 0
@@ -133,7 +150,7 @@ def dispatch(args: argparse.Namespace, extra_args: list[str]) -> int:
 
     if args.command in {"run", "affected"}:
         if args.command == "affected" and args.list_projects:
-            names = select_affected_projects(workspace, args)
+            names = select_projects(workspace, args, affected=True)
             if args.json:
                 print(json.dumps(workspace.as_dict(names), indent=2, sort_keys=True))
             else:
@@ -145,13 +162,14 @@ def dispatch(args: argparse.Namespace, extra_args: list[str]) -> int:
         if args.command == "affected" and not args.target:
             raise WorkspaceError("`joist affected` requires a target, or use `joist affected --list`.")
 
+        base = comparison_base(args)
         options = RunOptions(
             target=args.target,
             projects=tuple(args.projects),
-            all_projects=args.all_projects,
+            project_filters=tuple(args.project_filters),
             include_deps=args.include_deps,
-            affected=bool(getattr(args, "affected", False)),
-            base=args.base,
+            affected=bool(getattr(args, "affected", False) or getattr(args, "since", None) or args.base or args.head),
+            base=base,
             head=args.head,
             no_cache=args.no_cache,
             dry_run=args.dry_run,
@@ -177,20 +195,30 @@ def dispatch(args: argparse.Namespace, extra_args: list[str]) -> int:
     return 0
 
 
-def select_affected_projects(workspace: Workspace, args: argparse.Namespace) -> set[str]:
-    if args.list_projects:
-        requested_names = tuple(name for name in (args.target, *args.projects) if name)
-    else:
-        requested_names = tuple(args.projects)
+def comparison_base(args: argparse.Namespace) -> str | None:
+    since = getattr(args, "since", None)
+    base = getattr(args, "base", None)
+    if since and base:
+        raise WorkspaceError("Use either --since or --base, not both.")
+    return since or base
 
-    if args.all_projects:
-        selected = set(workspace.projects)
-    else:
-        selected = workspace.affected(args.base, args.head)
-        if requested_names:
-            requested = {workspace.project(name).name for name in requested_names}
-            selected = selected.intersection(requested)
-    if args.include_deps:
+
+def requested_projects(args: argparse.Namespace) -> tuple[str, ...]:
+    names = list(getattr(args, "projects", ()))
+    names.extend(getattr(args, "project_filters", ()))
+    if getattr(args, "list_projects", False) and args.target:
+        names.insert(0, args.target)
+    return tuple(names)
+
+
+def select_projects(workspace: Workspace, args: argparse.Namespace, *, affected: bool = False) -> set[str]:
+    requested_names = requested_projects(args)
+
+    selected = workspace.affected(comparison_base(args), getattr(args, "head", None)) if affected else set(workspace.projects)
+    if requested_names:
+        requested = {workspace.project(name).name for name in requested_names}
+        selected = selected.intersection(requested) if affected else requested
+    if getattr(args, "include_deps", False):
         selected = workspace.with_dependencies(selected)
     return selected
 

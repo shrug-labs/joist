@@ -8,7 +8,7 @@ their Python clone:
 - a project graph built from workspace packages
 - named targets such as `test`, `lint`, and `build`
 - dependency-aware task ordering
-- affected-project runs based on `git diff`
+- changed-project selection based on `git diff`
 - a small local task cache
 - fixed-version releases for public packages
 
@@ -20,8 +20,8 @@ cd demo
 uvx joist new lib core
 uvx joist new app api --depends-on core
 uvx joist graph
-uvx joist run test --all
-uvx joist affected test --base main
+uvx joist run test
+uvx joist run test --since main
 uvx joist version patch --dry-run
 ```
 
@@ -33,7 +33,8 @@ available directly:
 
 ```sh
 joist list
-joist affected test --base origin/main --head HEAD
+joist list --since origin/main
+joist run test --since origin/main
 ```
 
 ## Python support
@@ -127,9 +128,9 @@ core = { workspace = true }
 Explicit `depends_on` is available for task-ordering edges that are not package
 dependencies.
 
-## Affected run flow
+## Changed-project selection
 
-`joist affected` follows the same broad shape as Nx affected runs: Git decides
+`--since` follows the same broad shape as Lerna and Nx affected runs: Git decides
 which files changed, Joist maps those files onto workspace projects, then the
 project graph pulls in dependents that also need validation.
 
@@ -167,17 +168,27 @@ affects_all = [
 
 ```sh
 uv run joist list
+uv run joist list --since origin/main --json
+uv run joist list --since origin/main --project api
 uv run joist graph --format dot
 uv run joist run build api
-uv run joist run lint --all --dry-run
-uv run joist affected --list --base origin/main --head HEAD --json
-uv run joist affected --list api --base origin/main --head HEAD
-uv run joist affected test --base origin/main --head HEAD
+uv run joist run lint --dry-run
+uv run joist run test --since origin/main
+uv run joist run test --since origin/main --project api
 uv run joist cache clear
 uv run joist version minor
 ```
 
-With `--list`, project names filter the affected set instead of naming a target.
+Default `run` commands skip projects that do not define the target. Explicit
+project filters such as `--project api` are strict and fail if that project does
+not define the target.
+
+`affected` remains as a compatibility spelling for older workflows:
+
+```sh
+uv run joist affected --list --base origin/main --head HEAD --json
+uv run joist affected test --base origin/main --head HEAD
+```
 
 `depends_on = ["^build"]` means "run the `build` target for dependency projects
 before this project." This is the one Nx-style target pipeline rule Joist
@@ -195,7 +206,7 @@ system. Keep the target commands uv-native, then have CI or local automation cal
 Joist to decide which projects need each target.
 
 For pull requests, fetch enough Git history for the base comparison and run only
-affected targets:
+changed targets:
 
 ```yaml
 name: ci
@@ -204,7 +215,7 @@ on:
   pull_request:
 
 jobs:
-  affected:
+  changed:
     runs-on: ubuntu-latest
     env:
       BASE_REF: ${{ github.base_ref }}
@@ -214,10 +225,10 @@ jobs:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       - run: uv sync --locked
-      - run: uv run joist affected --list --base "origin/${BASE_REF}" --head HEAD --json
-      - run: uv run joist affected lint --base "origin/${BASE_REF}" --head HEAD
-      - run: uv run joist affected test --base "origin/${BASE_REF}" --head HEAD
-      - run: uv run joist affected build --base "origin/${BASE_REF}" --head HEAD
+      - run: uv run joist list --since "origin/${BASE_REF}" --json
+      - run: uv run joist run lint --since "origin/${BASE_REF}"
+      - run: uv run joist run test --since "origin/${BASE_REF}"
+      - run: uv run joist run build --since "origin/${BASE_REF}"
 ```
 
 For main-branch validation or nightly builds, run the complete target set:
@@ -236,28 +247,28 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       - run: uv sync --locked
-      - run: uv run joist run lint --all
-      - run: uv run joist run test --all
-      - run: uv run joist run build --all
+      - run: uv run joist run lint
+      - run: uv run joist run test
+      - run: uv run joist run build
 ```
 
 For Make-based workflows, delegate the selection logic to Joist instead of
 duplicating package lists:
 
 ```makefile
-.PHONY: lint test build affected-test clean-cache
+.PHONY: lint test build since-test clean-cache
 
 lint:
-	uv run joist run lint --all
+	uv run joist run lint
 
 test:
-	uv run joist run test --all
+	uv run joist run test
 
 build:
-	uv run joist run build --all
+	uv run joist run build
 
-affected-test:
-	uv run joist affected test --base origin/main
+since-test:
+	uv run joist run test --since origin/main
 
 clean-cache:
 	uv run joist cache clear
@@ -270,7 +281,7 @@ after the bump:
 uv sync --locked
 uv run joist version patch
 uv lock
-uv run joist run build --all --no-cache
+uv run joist run build --no-cache
 ```
 
 Before uploading, run the local PyPI readiness checks:
@@ -278,6 +289,7 @@ Before uploading, run the local PyPI readiness checks:
 ```sh
 uv run pytest
 uv run ruff check .
+rm -rf dist
 uv build
 uv run twine check dist/*
 uv publish --dry-run --trusted-publishing never
