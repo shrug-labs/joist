@@ -172,16 +172,16 @@ def load_config(root: Path) -> WorkspaceConfig:
     root = root.resolve()
     joist_path = root / "joist.toml"
     data = _read_toml(joist_path) if joist_path.exists() else {}
-    workspace_data = data.get("workspace", {})
+    workspace_data = _table(data.get("workspace", {}), "workspace")
     uv_members, uv_excludes = _uv_workspace_globs(root)
 
-    project_globs = tuple(workspace_data.get("projects") or uv_members or DEFAULT_PROJECT_GLOBS)
-    project_excludes = tuple(workspace_data.get("exclude") or uv_excludes)
-    configured_affects_all = _string_list(workspace_data.get("affects_all", ()), "workspace.affects_all")
+    project_globs = _string_sequence(workspace_data.get("projects"), "workspace.projects") or uv_members or DEFAULT_PROJECT_GLOBS
+    project_excludes = _string_sequence(workspace_data.get("exclude"), "workspace.exclude") or uv_excludes
+    configured_affects_all = _string_sequence(workspace_data.get("affects_all"), "workspace.affects_all")
     affects_all = tuple(dict.fromkeys(DEFAULT_AFFECTS_ALL + configured_affects_all))
-    cache_dir = _workspace_path(root, workspace_data.get("cache_dir", ".joist/cache"))
-    default_base = workspace_data.get("default_base", "main")
-    target_defaults = _parse_targets(data.get("target_defaults", {}), {})
+    cache_dir = _workspace_path(root, _string_value(workspace_data.get("cache_dir", ".joist/cache"), "workspace.cache_dir"))
+    default_base = _string_value(workspace_data.get("default_base", "main"), "workspace.default_base")
+    target_defaults = _parse_targets(_table(data.get("target_defaults", {}), "target_defaults"), {})
 
     return WorkspaceConfig(
         root=root,
@@ -232,19 +232,20 @@ def discover_projects(config: WorkspaceConfig) -> dict[str, Project]:
 
 def _project_from_pyproject(config: WorkspaceConfig, project_root: Path) -> Project:
     pyproject = _read_toml(project_root / "pyproject.toml")
-    project_data = pyproject.get("project", {})
-    joist_data = pyproject.get("tool", {}).get("joist", {})
-    package_name = project_data.get("name") or joist_data.get("name") or project_root.name
-    name = joist_data.get("name") or package_name
-    targets = _parse_targets(joist_data.get("targets", {}), config.target_defaults)
+    project_data = _table(pyproject.get("project", {}), "project")
+    tool_data = _table(pyproject.get("tool", {}), "tool")
+    joist_data = _table(tool_data.get("joist", {}), "tool.joist")
+    package_name = _string_value(project_data.get("name") or joist_data.get("name") or project_root.name, "project.name")
+    name = _string_value(joist_data.get("name") or package_name, "tool.joist.name")
+    targets = _parse_targets(_table(joist_data.get("targets", {}), "tool.joist.targets"), config.target_defaults)
     return Project(
         name=name,
         root=project_root,
         package_name=package_name,
-        version=project_data.get("version", "0.0.0"),
-        type=joist_data.get("type", "lib"),
-        private=bool(joist_data.get("private", False)),
-        depends_on=tuple(joist_data.get("depends_on", ())),
+        version=_string_value(project_data.get("version", "0.0.0"), "project.version"),
+        type=_string_value(joist_data.get("type", "lib"), "tool.joist.type"),
+        private=_bool_value(joist_data.get("private", False), "tool.joist.private"),
+        depends_on=_string_sequence(joist_data.get("depends_on"), "tool.joist.depends_on"),
         targets=targets,
     )
 
@@ -267,7 +268,7 @@ def _parse_targets(raw_targets: dict[str, Any], defaults: dict[str, Target]) -> 
             cwd=cwd,
             env=_target_env(name, raw, base),
             if_exists=_string_tuple(name, raw.get("if_exists", base.if_exists if base else ()), "if_exists"),
-            cache=bool(raw.get("cache", base.cache if base else True)),
+            cache=_bool_value(raw.get("cache", base.cache if base else True), f"Target '{name}' cache"),
             inputs=_string_tuple(name, raw.get("inputs", base.inputs if base else ()), "inputs"),
             outputs=_string_tuple(name, raw.get("outputs", base.outputs if base else ()), "outputs"),
             depends_on=_string_tuple(name, raw.get("depends_on", base.depends_on if base else ()), "depends_on"),
@@ -281,13 +282,13 @@ def _target_commands(name: str, raw: dict[str, Any], base: Target | None) -> tup
     if has_command and has_commands:
         raise WorkspaceError(f"Target '{name}' must use either command or commands, not both.")
     if has_commands:
-        commands = raw["commands"]
-        if not isinstance(commands, list | tuple) or not commands or not all(isinstance(item, str) for item in commands):
+        commands = _string_sequence(raw["commands"], f"Target '{name}' commands")
+        if not commands:
             raise WorkspaceError(f"Target '{name}' commands must be a non-empty list of strings.")
-        return tuple(commands)
+        return commands
     if has_command:
-        command = raw["command"]
-        if not isinstance(command, str) or not command:
+        command = _string_value(raw["command"], f"Target '{name}' command")
+        if not command:
             raise WorkspaceError(f"Target '{name}' command must be a non-empty string.")
         return (command,)
     if base:
@@ -299,21 +300,15 @@ def _target_env(name: str, raw: dict[str, Any], base: Target | None) -> dict[str
     env = dict(base.env) if base else {}
     if "env" not in raw:
         return env
-    raw_env = raw["env"]
-    if not isinstance(raw_env, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in raw_env.items()):
+    raw_env = _table(raw["env"], f"Target '{name}' env")
+    if not all(isinstance(key, str) and isinstance(value, str) for key, value in raw_env.items()):
         raise WorkspaceError(f"Target '{name}' env must be a table of string keys and values.")
     env.update(raw_env)
     return env
 
 
 def _string_tuple(name: str, value: Any, field: str) -> tuple[str, ...]:
-    if isinstance(value, str):
-        return (value,)
-    if not isinstance(value, list | tuple):
-        raise WorkspaceError(f"Target '{name}' {field} must be a string or list of strings.")
-    if not all(isinstance(item, str) for item in value):
-        raise WorkspaceError(f"Target '{name}' {field} must contain only strings.")
-    return tuple(value)
+    return _string_sequence(value, f"Target '{name}' {field}", allow_single=True)
 
 
 def _internal_dependencies(pyproject_path: Path, package_to_project: dict[str, str]) -> set[str]:
@@ -378,9 +373,32 @@ def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatch(value, pattern.rstrip("/")) for pattern in patterns)
 
 
-def _string_list(value: Any, name: str) -> tuple[str, ...]:
+def _table(value: Any, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise WorkspaceError(f"{name} must be a table.")
+    return value
+
+
+def _string_value(value: Any, name: str) -> str:
+    if not isinstance(value, str):
+        raise WorkspaceError(f"{name} must be a string.")
+    return value
+
+
+def _bool_value(value: Any, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise WorkspaceError(f"{name} must be true or false.")
+    return value
+
+
+def _string_sequence(value: Any, name: str, *, allow_single: bool = False) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if allow_single and isinstance(value, str):
+        return (value,)
     if not isinstance(value, list | tuple):
-        raise WorkspaceError(f"{name} must be a list of strings.")
+        kind = "a string or list of strings" if allow_single else "a list of strings"
+        raise WorkspaceError(f"{name} must be {kind}.")
     if not all(isinstance(item, str) for item in value):
         raise WorkspaceError(f"{name} must contain only strings.")
     return tuple(value)
@@ -413,8 +431,13 @@ def _uv_workspace_globs(root: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
     if not pyproject_path.exists():
         return (), ()
     data = _read_toml(pyproject_path)
-    workspace = data.get("tool", {}).get("uv", {}).get("workspace", {})
-    return tuple(workspace.get("members", ())), tuple(workspace.get("exclude", ()))
+    tool = _table(data.get("tool", {}), "tool")
+    uv = _table(tool.get("uv", {}), "tool.uv")
+    workspace = _table(uv.get("workspace", {}), "tool.uv.workspace")
+    return (
+        _string_sequence(workspace.get("members"), "tool.uv.workspace.members"),
+        _string_sequence(workspace.get("exclude"), "tool.uv.workspace.exclude"),
+    )
 
 
 def _read_toml(path: Path) -> dict[str, Any]:

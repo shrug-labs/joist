@@ -18,7 +18,12 @@ def render_template(template: str, workspace_root: Path, project: Project, *, qu
     }
     if quoted:
         values = {key: shlex.quote(value) for key, value in values.items()}
-    return template.format(**values)
+    try:
+        return template.format(**values)
+    except KeyError as exc:
+        raise WorkspaceError(f"Unknown target template field '{exc.args[0]}'.") from exc
+    except (AttributeError, IndexError, ValueError) as exc:
+        raise WorkspaceError(f"Invalid target template: {exc}") from exc
 
 
 def resolve_cwd(workspace_root: Path, project: Project, cwd: str) -> Path:
