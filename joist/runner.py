@@ -24,7 +24,7 @@ class Task:
 class RunOptions:
     target: str
     projects: tuple[str, ...] = ()
-    all_projects: bool = False
+    project_filters: tuple[str, ...] = ()
     include_deps: bool = False
     affected: bool = False
     base: str | None = None
@@ -60,6 +60,7 @@ class Runner:
         selected = self._select_projects(options)
         if options.include_deps:
             selected = self.workspace.with_dependencies(selected)
+        selected_count = len(selected)
 
         planned: list[Task] = []
         seen: set[tuple[str, str]] = set()
@@ -90,23 +91,27 @@ class Runner:
             seen.add(key)
             planned.append(Task(project=project, target=target))
 
+        strict_target = bool(options.projects or options.project_filters)
         for project in self.workspace.sorted_projects(selected):
-            add_task(project.name, options.target, strict=not options.all_projects)
+            add_task(project.name, options.target, strict=strict_target)
+        if selected_count and not planned:
+            raise WorkspaceError(f"No selected projects define target '{options.target}'.")
 
         return planned
 
     def _select_projects(self, options: RunOptions) -> set[str]:
+        requested = (*options.projects, *options.project_filters)
         if options.affected:
             affected = self.workspace.affected(options.base, options.head)
-            if options.projects:
-                requested = {self.workspace.project(name).name for name in options.projects}
-                return affected.intersection(requested)
+            if requested:
+                requested_names = {self.workspace.project(name).name for name in requested}
+                return affected.intersection(requested_names)
             return affected
 
-        if options.all_projects or not options.projects:
+        if not requested:
             return set(self.workspace.projects)
 
-        return {self.workspace.project(name).name for name in options.projects}
+        return {self.workspace.project(name).name for name in requested}
 
     def _run_task(self, task: Task, command: str, extra_args: list[str], no_cache: bool) -> int:
         use_cache = task.target.cache and not no_cache
