@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import Project, Target
+from .render import render_template
 
 
 class TaskCache:
@@ -15,17 +16,25 @@ class TaskCache:
         self.workspace_root = workspace_root
         self.cache_dir = cache_dir
 
-    def key(self, project: Project, target: Target, command: str, extra_args: list[str]) -> str:
+    def key(
+        self,
+        project: Project,
+        target: Target,
+        cwd: Path,
+        env: dict[str, str],
+        commands: tuple[str, ...],
+    ) -> str:
         digest = hashlib.sha256()
         payload = {
             "project": project.name,
             "target": target.name,
-            "command": command,
-            "args": extra_args,
+            "cwd": _path_label(self.workspace_root, cwd),
+            "env": env,
+            "commands": list(commands),
             "inputs": list(target.inputs),
         }
         digest.update(json.dumps(payload, sort_keys=True).encode())
-        for path, value in self._input_hashes(project, target):
+        for path, value in self._input_hashes(project, target, cwd):
             digest.update(path.encode())
             digest.update(value.encode())
         return digest.hexdigest()
@@ -46,25 +55,25 @@ class TaskCache:
         with cache_file.open("w", encoding="utf-8") as handle:
             json.dump(result, handle, indent=2, sort_keys=True)
 
-    def outputs_present(self, project: Project, target: Target) -> bool:
+    def outputs_present(self, project: Project, target: Target, cwd: Path) -> bool:
         if not target.outputs:
             return True
         for pattern in target.outputs:
-            if not self._expand(project, pattern):
+            if not self._expand(project, pattern, cwd):
                 return False
         return True
 
-    def _input_hashes(self, project: Project, target: Target) -> list[tuple[str, str]]:
+    def _input_hashes(self, project: Project, target: Target, cwd: Path) -> list[tuple[str, str]]:
         inputs = target.inputs or (
             "{project_root}/**/*.py",
             "{project_root}/pyproject.toml",
-            "pyproject.toml",
-            "uv.lock",
-            "joist.toml",
+            "{workspace_root}/pyproject.toml",
+            "{workspace_root}/uv.lock",
+            "{workspace_root}/joist.toml",
         )
         values: list[tuple[str, str]] = []
         for pattern in inputs:
-            matches = self._expand(project, pattern)
+            matches = self._expand(project, pattern, cwd)
             if not matches:
                 values.append((pattern, "missing"))
                 continue
@@ -78,17 +87,11 @@ class TaskCache:
                 values.append((label, _hash_file(path)))
         return sorted(values)
 
-    def _expand(self, project: Project, pattern: str) -> list[Path]:
-        rendered = pattern.format(
-            project=project.name,
-            project_name=project.name,
-            package_name=project.package_name,
-            project_root=str(project.root),
-            workspace_root=str(self.workspace_root),
-        )
+    def _expand(self, project: Project, pattern: str, cwd: Path) -> list[Path]:
+        rendered = render_template(pattern, self.workspace_root, project)
         path = Path(rendered)
         if not path.is_absolute():
-            path = self.workspace_root / path
+            path = cwd / path
         matches = [Path(match) for match in glob.glob(str(path), recursive=True)]
         if path.exists() and path not in matches:
             matches.append(path)
@@ -101,3 +104,10 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _path_label(root: Path, path: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
