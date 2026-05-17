@@ -29,19 +29,22 @@ default_base = "main"
 cache_dir = ".joist/cache"
 
 [target_defaults.test]
-command = "uv run --package {package_name} pytest {project_root}/tests"
+cwd = "{project_root}"
+commands = ["uv run pytest tests"]
 cache = true
-inputs = ["{project_root}/src/**/*.py", "{project_root}/tests/**/*.py", "{project_root}/pyproject.toml", "pyproject.toml", "uv.lock"]
+inputs = ["src/**/*.py", "tests/**/*.py", "pyproject.toml", "{workspace_root}/pyproject.toml", "{workspace_root}/uv.lock"]
 
 [target_defaults.lint]
-command = "uv run ruff check {project_root}"
+cwd = "{project_root}"
+commands = ["uv run ruff check src tests"]
 cache = true
-inputs = ["{project_root}/src/**/*.py", "{project_root}/tests/**/*.py", "{project_root}/pyproject.toml", "pyproject.toml", "uv.lock"]
+inputs = ["src/**/*.py", "tests/**/*.py", "pyproject.toml", "{workspace_root}/pyproject.toml", "{workspace_root}/uv.lock"]
 
 [target_defaults.build]
-command = "uv build --package {package_name}"
+cwd = "{project_root}"
+commands = ["uv build"]
 cache = false
-inputs = ["{project_root}/src/**/*.py", "{project_root}/pyproject.toml", "pyproject.toml", "uv.lock"]
+inputs = ["src/**/*.py", "pyproject.toml", "{workspace_root}/pyproject.toml", "{workspace_root}/uv.lock"]
 depends_on = ["^build"]
 """
 

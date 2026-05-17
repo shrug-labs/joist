@@ -257,18 +257,63 @@ def _parse_targets(raw_targets: dict[str, Any], defaults: dict[str, Target]) -> 
             raw = {"command": raw}
         if not isinstance(raw, dict):
             raise WorkspaceError(f"Target '{name}' must be a string or table.")
-        command = raw.get("command") or (base.command if base else None)
-        if not command:
-            raise WorkspaceError(f"Target '{name}' is missing a command.")
+        commands = _target_commands(name, raw, base)
+        cwd = raw.get("cwd", base.cwd if base else "{workspace_root}")
+        if not isinstance(cwd, str):
+            raise WorkspaceError(f"Target '{name}' cwd must be a string.")
         targets[name] = Target(
             name=name,
-            command=command,
+            commands=commands,
+            cwd=cwd,
+            env=_target_env(name, raw, base),
+            if_exists=_string_tuple(name, raw.get("if_exists", base.if_exists if base else ()), "if_exists"),
             cache=bool(raw.get("cache", base.cache if base else True)),
-            inputs=tuple(raw.get("inputs", base.inputs if base else ())),
-            outputs=tuple(raw.get("outputs", base.outputs if base else ())),
-            depends_on=tuple(raw.get("depends_on", base.depends_on if base else ())),
+            inputs=_string_tuple(name, raw.get("inputs", base.inputs if base else ()), "inputs"),
+            outputs=_string_tuple(name, raw.get("outputs", base.outputs if base else ()), "outputs"),
+            depends_on=_string_tuple(name, raw.get("depends_on", base.depends_on if base else ()), "depends_on"),
         )
     return targets
+
+
+def _target_commands(name: str, raw: dict[str, Any], base: Target | None) -> tuple[str, ...]:
+    has_command = "command" in raw
+    has_commands = "commands" in raw
+    if has_command and has_commands:
+        raise WorkspaceError(f"Target '{name}' must use either command or commands, not both.")
+    if has_commands:
+        commands = raw["commands"]
+        if not isinstance(commands, list | tuple) or not commands or not all(isinstance(item, str) for item in commands):
+            raise WorkspaceError(f"Target '{name}' commands must be a non-empty list of strings.")
+        return tuple(commands)
+    if has_command:
+        command = raw["command"]
+        if not isinstance(command, str) or not command:
+            raise WorkspaceError(f"Target '{name}' command must be a non-empty string.")
+        return (command,)
+    if base:
+        return base.commands
+    raise WorkspaceError(f"Target '{name}' is missing command or commands.")
+
+
+def _target_env(name: str, raw: dict[str, Any], base: Target | None) -> dict[str, str]:
+    env = dict(base.env) if base else {}
+    if "env" not in raw:
+        return env
+    raw_env = raw["env"]
+    if not isinstance(raw_env, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in raw_env.items()):
+        raise WorkspaceError(f"Target '{name}' env must be a table of string keys and values.")
+    env.update(raw_env)
+    return env
+
+
+def _string_tuple(name: str, value: Any, field: str) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if not isinstance(value, list | tuple):
+        raise WorkspaceError(f"Target '{name}' {field} must be a string or list of strings.")
+    if not all(isinstance(item, str) for item in value):
+        raise WorkspaceError(f"Target '{name}' {field} must contain only strings.")
+    return tuple(value)
 
 
 def _internal_dependencies(pyproject_path: Path, package_to_project: dict[str, str]) -> set[str]:

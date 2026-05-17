@@ -80,14 +80,26 @@ default_base = "main"
 cache_dir = ".joist/cache"
 
 [target_defaults.test]
-command = "uv run --package {package_name} pytest {project_root}/tests"
+cwd = "{project_root}"
+env = { COVERAGE_FILE = "{workspace_root}/.coverage.{project_name}" }
+commands = ["uv run pytest tests"]
 cache = true
-inputs = ["{project_root}/src/**/*.py", "{project_root}/tests/**/*.py", "{project_root}/pyproject.toml", "pyproject.toml", "uv.lock"]
+inputs = ["src/**/*.py", "tests/**/*.py", "pyproject.toml", "{workspace_root}/pyproject.toml", "{workspace_root}/uv.lock"]
 
 [target_defaults.build]
-command = "uv build --package {package_name}"
+cwd = "{project_root}"
+commands = ["uv build"]
 cache = false
 depends_on = ["^build"]
+
+[target_defaults.containerize]
+cwd = "{project_root}"
+if_exists = "Containerfile"
+commands = [
+  "podman build -t {package_name}:{version} .",
+  "podman tag {package_name}:{version} {package_name}:latest",
+]
+cache = false
 ```
 
 Target command templates support:
@@ -96,9 +108,23 @@ Target command templates support:
 - `{project_root}`
 - `{project_name}`
 - `{package_name}`
+- `{version}`
 
-Commands are split with Python's `shlex` and executed without a shell. Use an
-explicit shell command such as `sh -c "..."` only when shell syntax is required.
+Target `cwd` defaults to the workspace root. Relative `cwd` values resolve from
+the workspace root. Relative `inputs`, `outputs`, and `if_exists` paths resolve
+from the rendered target `cwd`.
+
+When a target runs from `{project_root}`, use `{workspace_root}` for root-level
+files and outputs such as `{workspace_root}/requirements-dev.txt`,
+`{workspace_root}/ruff.toml`, or `{workspace_root}/.coverage.{project_name}`.
+
+`if_exists` accepts a string path or list of paths. Joist skips the target for a
+project unless all listed paths exist.
+
+Prefer `commands = ["..."]`, even for one-step targets. The older
+`command = "..."` spelling still works for compatibility. Commands are split with
+Python's `shlex` and executed without a shell. Use an explicit shell command such
+as `sh -c "..."` only when shell syntax is required.
 
 Each project can override or add targets in its own `pyproject.toml`:
 
@@ -109,7 +135,8 @@ type = "app"
 depends_on = ["core"]
 
 [tool.joist.targets.serve]
-command = "uv run --package api python -m api"
+cwd = "{project_root}"
+commands = ["uv run python -m api"]
 cache = false
 ```
 
@@ -195,9 +222,10 @@ before this project." This is the one Nx-style target pipeline rule Joist
 supports.
 
 The cache is deliberately simple. It hashes configured input files, the rendered
-command, and extra CLI args, then replays cached terminal output for successful
-runs. It does not implement remote cache or artifact restoration, so generated
-build targets are intentionally uncached by default.
+command list, rendered `cwd`, configured rendered `env`, and extra CLI args,
+then replays cached terminal output for successful runs. It does not implement
+remote cache or artifact restoration, so generated build targets are
+intentionally uncached by default.
 
 ## Build system integration
 

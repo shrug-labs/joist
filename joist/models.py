@@ -7,7 +7,10 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Target:
     name: str
-    command: str
+    commands: tuple[str, ...]
+    cwd: str = "{workspace_root}"
+    env: dict[str, str] = field(default_factory=dict)
+    if_exists: tuple[str, ...] = ()
     cache: bool = True
     inputs: tuple[str, ...] = ()
     outputs: tuple[str, ...] = ()

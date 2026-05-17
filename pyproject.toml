@@ -1,6 +1,6 @@
 [project]
 name = "joist"
-version = "0.3.0"
+version = "0.4.0"
 description = "A small, opinionated uv-native Python monorepo framework."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -57,14 +57,14 @@ private = false
 depends_on = []
 
 [tool.joist.targets.test]
-command = "python -m unittest discover -s tests"
+commands = ["python -m unittest discover -s tests"]
 cache = false
 
 [tool.joist.targets.lint]
-command = "python -m compileall joist tests"
+commands = ["python -m compileall joist tests"]
 cache = true
 inputs = ["joist/**/*.py", "tests/**/*.py", "pyproject.toml", "joist.toml"]
 
 [tool.joist.targets.build]
-command = "uv build"
+commands = ["uv build"]
 cache = false

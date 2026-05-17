@@ -9,9 +9,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
+from joist.cache import TaskCache
 from joist.cli import main
 from joist.release import bump_version, bump_workspace_version
-from joist.runner import RunOptions, Runner
+from joist.runner import RunOptions, Runner, render_execution
 from joist.scaffold import init_workspace, new_project
 from joist.workspace import Workspace, WorkspaceError, load_config, discover_projects
 
@@ -240,6 +241,165 @@ affects_all = "requirements*.txt"
         code = Runner(workspace).run(RunOptions(target="no_shell", projects=("core",), no_cache=True))
 
         self.assertEqual(code, 0)
+
+    def test_target_cwd_env_version_and_commands_are_applied(self) -> None:
+        root = self.make_workspace()
+        write(
+            root / "joist.toml",
+            f"""
+[workspace]
+projects = ["packages/*", "apps/*"]
+
+[target_defaults.describe]
+cwd = "{{project_root}}"
+env = {{ JOIST_PROJECT = "{{project_name}}", JOIST_VERSION = "{{version}}" }}
+commands = [
+  "{shlex.quote(sys.executable)} -c \\"import os, pathlib; print(pathlib.Path.cwd().name); print(os.environ['JOIST_PROJECT']); print(os.environ['JOIST_VERSION'])\\"",
+  "{shlex.quote(sys.executable)} -c \\"print('second-step-{{version}}')\\"",
+]
+cache = false
+""",
+        )
+        workspace = Workspace(load_config(root), discover_projects(load_config(root)))
+
+        output = StringIO()
+        with redirect_stdout(output):
+            code = Runner(workspace).run(RunOptions(target="describe", projects=("core",), no_cache=True))
+
+        self.assertEqual(code, 0)
+        self.assertIn("joist: running core:describe", output.getvalue())
+        self.assertIn("core\ncore\n0.1.0", output.getvalue())
+        self.assertIn("second-step-0.1.0", output.getvalue())
+
+    def test_if_exists_skips_projects_missing_required_files(self) -> None:
+        root = self.make_workspace()
+        write(root / "packages/core/Containerfile", "FROM scratch")
+        write(
+            root / "joist.toml",
+            f"""
+[workspace]
+projects = ["packages/*", "apps/*"]
+
+[target_defaults.containerize]
+cwd = "{{project_root}}"
+if_exists = "Containerfile"
+commands = ["{shlex.quote(sys.executable)} -c \\"print('container:{{project_name}}')\\""]
+cache = false
+""",
+        )
+        workspace = Workspace(load_config(root), discover_projects(load_config(root)))
+
+        output = StringIO()
+        with redirect_stdout(output):
+            code = Runner(workspace).run(RunOptions(target="containerize", dry_run=True))
+
+        self.assertEqual(code, 0)
+        self.assertIn("core:containerize ->", output.getvalue())
+        self.assertIn("container:core", output.getvalue())
+        self.assertIn("joist: skipped api:containerize (missing Containerfile)", output.getvalue())
+
+    def test_command_and_commands_are_mutually_exclusive(self) -> None:
+        root = self.make_workspace()
+        write(
+            root / "joist.toml",
+            """
+[workspace]
+projects = ["packages/*", "apps/*"]
+
+[target_defaults.bad]
+command = "echo one"
+commands = ["echo two"]
+""",
+        )
+
+        with self.assertRaisesRegex(WorkspaceError, "either command or commands"):
+            load_config(root)
+
+    def test_extra_args_are_rejected_for_multi_command_targets(self) -> None:
+        root = self.make_workspace()
+        write(
+            root / "joist.toml",
+            """
+[workspace]
+projects = ["packages/*", "apps/*"]
+
+[target_defaults.multi]
+commands = ["echo one", "echo two"]
+cache = false
+""",
+        )
+        workspace = Workspace(load_config(root), discover_projects(load_config(root)))
+
+        with self.assertRaisesRegex(WorkspaceError, "Extra CLI args"):
+            Runner(workspace).run(RunOptions(target="multi", projects=("core",), extra_args=("--verbose",)))
+
+    def test_cache_key_includes_execution_context(self) -> None:
+        root = self.make_workspace()
+        workspace = Workspace(load_config(root), discover_projects(load_config(root)))
+        project = workspace.project("core")
+        target = project.target("no_shell")
+        self.assertIsNotNone(target)
+        assert target is not None
+        cache = TaskCache(root, root / ".joist/cache")
+
+        cwd = root / "packages/core"
+        key = cache.key(project, target, cwd, {"A": "one"}, ("echo one",))
+
+        self.assertNotEqual(key, cache.key(project, target, root, {"A": "one"}, ("echo one",)))
+        self.assertNotEqual(key, cache.key(project, target, cwd, {"A": "two"}, ("echo one",)))
+        self.assertNotEqual(key, cache.key(project, target, cwd, {"A": "one"}, ("echo two",)))
+
+    def test_cached_results_do_not_store_configured_env_values(self) -> None:
+        root = self.make_workspace()
+        write(
+            root / "joist.toml",
+            f"""
+[workspace]
+projects = ["packages/*", "apps/*"]
+
+[target_defaults.secret]
+env = {{ TOKEN = "s3cr3t" }}
+commands = ["{shlex.quote(sys.executable)} -c \\"print('ok')\\""]
+cache = true
+""",
+        )
+        workspace = Workspace(load_config(root), discover_projects(load_config(root)))
+
+        with redirect_stdout(StringIO()):
+            code = Runner(workspace).run(RunOptions(target="secret", projects=("core",)))
+
+        self.assertEqual(code, 0)
+        cache_text = "\n".join(path.read_text(encoding="utf-8") for path in (root / ".joist/cache").glob("*.json"))
+        self.assertNotIn("s3cr3t", cache_text)
+
+    def test_inputs_resolve_relative_to_target_cwd(self) -> None:
+        root = self.make_workspace()
+        write(root / "packages/core/data.txt", "one")
+        write(
+            root / "joist.toml",
+            """
+[workspace]
+projects = ["packages/*", "apps/*"]
+
+[target_defaults.ctx]
+cwd = "{project_root}"
+commands = ["echo ctx"]
+inputs = ["data.txt"]
+""",
+        )
+        workspace = Workspace(load_config(root), discover_projects(load_config(root)))
+        project = workspace.project("core")
+        target = project.target("ctx")
+        self.assertIsNotNone(target)
+        assert target is not None
+        cache = TaskCache(root, root / ".joist/cache")
+        execution = render_execution(root, project, target)
+
+        first = cache.key(project, target, execution.cwd, execution.env, execution.commands)
+        write(root / "packages/core/data.txt", "two")
+        second = cache.key(project, target, execution.cwd, execution.env, execution.commands)
+
+        self.assertNotEqual(first, second)
 
     def test_bump_version(self) -> None:
         self.assertEqual(bump_version("1.2.3", "patch"), "1.2.4")
