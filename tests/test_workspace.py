@@ -12,6 +12,7 @@ from pathlib import Path
 from joist.cache import TaskCache
 from joist.cli import main
 from joist.release import bump_version, bump_workspace_version
+from joist.render import render_template, resolve_cwd
 from joist.runner import RunOptions, Runner, render_execution
 from joist.scaffold import init_workspace, new_project
 from joist.workspace import Workspace, WorkspaceError, load_config, discover_projects
@@ -227,6 +228,54 @@ affects_all = "requirements*.txt"
         with self.assertRaisesRegex(WorkspaceError, "workspace.affects_all"):
             load_config(root)
 
+    def test_workspace_project_globs_must_be_a_list(self) -> None:
+        root = self.make_workspace()
+        write(
+            root / "joist.toml",
+            """
+[workspace]
+projects = "packages/*"
+""",
+        )
+
+        with self.assertRaisesRegex(WorkspaceError, "workspace.projects"):
+            load_config(root)
+
+    def test_project_private_must_be_boolean(self) -> None:
+        root = self.make_workspace()
+        write(
+            root / "apps/api/pyproject.toml",
+            """
+[project]
+name = "api"
+version = "0.1.0"
+dependencies = []
+
+[tool.joist]
+private = "false"
+""",
+        )
+
+        with self.assertRaisesRegex(WorkspaceError, "tool.joist.private"):
+            discover_projects(load_config(root))
+
+    def test_target_cache_must_be_boolean(self) -> None:
+        root = self.make_workspace()
+        write(
+            root / "joist.toml",
+            """
+[workspace]
+projects = ["packages/*", "apps/*"]
+
+[target_defaults.bad]
+command = "echo bad"
+cache = "false"
+""",
+        )
+
+        with self.assertRaisesRegex(WorkspaceError, "Target 'bad' cache"):
+            load_config(root)
+
     def test_build_plan_honors_dependency_targets(self) -> None:
         root = self.make_workspace()
         workspace = Workspace(load_config(root), discover_projects(load_config(root)))
@@ -238,7 +287,8 @@ affects_all = "requirements*.txt"
         root = self.make_workspace()
         workspace = Workspace(load_config(root), discover_projects(load_config(root)))
 
-        code = Runner(workspace).run(RunOptions(target="no_shell", projects=("core",), no_cache=True))
+        with redirect_stdout(StringIO()):
+            code = Runner(workspace).run(RunOptions(target="no_shell", projects=("core",), no_cache=True))
 
         self.assertEqual(code, 0)
 
@@ -372,6 +422,12 @@ cache = true
         cache_text = "\n".join(path.read_text(encoding="utf-8") for path in (root / ".joist/cache").glob("*.json"))
         self.assertNotIn("s3cr3t", cache_text)
 
+    def test_cache_ignores_non_object_records(self) -> None:
+        root = self.make_workspace()
+        write(root / ".joist/cache/bad.json", "[]")
+
+        self.assertIsNone(TaskCache(root, root / ".joist/cache").read("bad"))
+
     def test_inputs_resolve_relative_to_target_cwd(self) -> None:
         root = self.make_workspace()
         write(root / "packages/core/data.txt", "one")
@@ -445,6 +501,20 @@ inputs = ["data.txt"]
         self.assertIn('version = "0.1.1"', (root / "apps/api/pyproject.toml").read_text(encoding="utf-8"))
         self.assertIn('"core==0.1.1"', (root / "apps/api/pyproject.toml").read_text(encoding="utf-8"))
         self.assertIn('__version__ = "0.1.1"', (root / "packages/core/src/core/__init__.py").read_text(encoding="utf-8"))
+
+    def test_release_only_rewrites_the_project_version_key(self) -> None:
+        root = self.make_workspace()
+        pyproject = root / "packages/core/pyproject.toml"
+        pyproject.write_text(
+            pyproject.read_text(encoding="utf-8").replace('version = "0.1.0"', 'versioning = "keep"\nversion = "0.1.0"', 1),
+            encoding="utf-8",
+        )
+        workspace = Workspace(load_config(root), discover_projects(load_config(root)))
+
+        bump_workspace_version(workspace, "patch")
+
+        self.assertIn('versioning = "keep"', pyproject.read_text(encoding="utf-8"))
+        self.assertIn('version = "0.1.1"', pyproject.read_text(encoding="utf-8"))
 
     def test_release_updates_private_project_internal_dependency_pins(self) -> None:
         root = self.make_workspace(api_private=True)
@@ -526,6 +596,22 @@ cache_dir = "../outside"
 
         with self.assertRaisesRegex(WorkspaceError, "inside"):
             load_config(root)
+
+    def test_target_cwd_must_stay_inside_workspace(self) -> None:
+        root = self.make_workspace()
+        workspace = Workspace(load_config(root), discover_projects(load_config(root)))
+
+        with self.assertRaisesRegex(WorkspaceError, "Target cwd must stay inside"):
+            resolve_cwd(root, workspace.project("core"), "..")
+
+    def test_unknown_template_field_is_a_workspace_error(self) -> None:
+        root = self.make_workspace()
+        workspace = Workspace(load_config(root), discover_projects(load_config(root)))
+
+        with self.assertRaisesRegex(WorkspaceError, "Unknown target template field 'missing'"):
+            render_template("{missing}", root, workspace.project("core"))
+        with self.assertRaisesRegex(WorkspaceError, "Invalid target template"):
+            render_template("{project_name.missing}", root, workspace.project("core"))
 
     def make_workspace(self, api_version: str = "0.1.0", api_private: bool = False) -> Path:
         temp = tempfile.TemporaryDirectory()

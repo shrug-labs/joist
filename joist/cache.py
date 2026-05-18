@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import Project, Target
-from .render import render_template
+from .render import resolve_target_path
 
 
 class TaskCache:
@@ -45,9 +45,10 @@ class TaskCache:
             return None
         try:
             with cache_file.open("r", encoding="utf-8") as handle:
-                return json.load(handle)
+                data = json.load(handle)
         except (OSError, JSONDecodeError):
             return None
+        return data if isinstance(data, dict) else None
 
     def write(self, key: str, result: dict[str, Any]) -> None:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -88,10 +89,7 @@ class TaskCache:
         return sorted(values)
 
     def _expand(self, project: Project, pattern: str, cwd: Path) -> list[Path]:
-        rendered = render_template(pattern, self.workspace_root, project)
-        path = Path(rendered)
-        if not path.is_absolute():
-            path = cwd / path
+        path = resolve_target_path(self.workspace_root, project, cwd, pattern)
         matches = [Path(match) for match in glob.glob(str(path), recursive=True)]
         if path.exists() and path not in matches:
             matches.append(path)

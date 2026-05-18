@@ -170,8 +170,6 @@ class Runner:
                 cache_key,
                 {
                     "label": task.label,
-                    "commands": list(execution.commands),
-                    "cwd": str(execution.cwd),
                     "returncode": 0,
                     "output": output,
                 },

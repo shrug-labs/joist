@@ -40,8 +40,8 @@ def bump_workspace_version(workspace: Workspace, bump: str, dry_run: bool = Fals
             _replace_project_version(pyproject, next_version)
 
         init_file = _module_init_file(project.root, project.package_name)
-        if init_file and _has_module_version(init_file):
-            old = _read_module_version(init_file) or project.version
+        old = _read_module_version(init_file) if init_file else None
+        if init_file and old is not None:
             changes.append(VersionChange(init_file, old, next_version))
             if not dry_run:
                 _replace_module_version(init_file, next_version)
@@ -86,7 +86,7 @@ def _replace_project_version(pyproject: Path, version: str) -> None:
         stripped = line.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
             in_project = stripped == "[project]"
-        if in_project and stripped.startswith("version"):
+        if in_project and re.match(r"version\s*=", stripped):
             output.append(f'version = "{version}"')
             replaced = True
         else:
@@ -115,7 +115,7 @@ def _replace_internal_dependency_versions(pyproject: Path, versions: dict[str, s
             should_rewrite = True
             if _line_closes_list(line):
                 in_dependency_list = False
-        elif table == "[project]" and stripped.startswith("dependencies"):
+        elif table == "[project]" and re.match(r"dependencies\s*=", stripped):
             should_rewrite = True
             in_dependency_list = "[" in line and not _line_closes_list(line)
         elif table == "[project.optional-dependencies]" and "=" in line:
@@ -181,10 +181,6 @@ def _module_init_file(project_root: Path, package_name: str) -> Path | None:
         project_root / module / "__init__.py",
     )
     return next((path for path in candidates if path.exists()), None)
-
-
-def _has_module_version(path: Path) -> bool:
-    return _read_module_version(path) is not None
 
 
 def _read_module_version(path: Path) -> str | None:

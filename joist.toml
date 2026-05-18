@@ -2,19 +2,3 @@
 projects = ["."]
 default_base = "main"
 cache_dir = ".joist/cache"
-
-[target_defaults.test]
-commands = ["uv run pytest {project_root}"]
-cache = true
-inputs = ["{project_root}/**/*.py", "{project_root}/pyproject.toml", "pyproject.toml", "uv.lock", "joist.toml"]
-
-[target_defaults.lint]
-commands = ["uv run ruff check {project_root}"]
-cache = true
-inputs = ["{project_root}/**/*.py", "{project_root}/pyproject.toml", "pyproject.toml", "uv.lock", "joist.toml"]
-
-[target_defaults.build]
-commands = ["uv build --package {package_name}"]
-cache = false
-inputs = ["{project_root}/src/**/*.py", "{project_root}/pyproject.toml", "pyproject.toml", "uv.lock", "joist.toml"]
-depends_on = ["^build"]
